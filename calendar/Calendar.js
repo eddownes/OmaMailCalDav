@@ -57,6 +57,29 @@ function caldavReport(startMs, endMs) {
     + '</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>'
 }
 
+// The three PROPFIND bodies calendar discovery sends in sequence: who the
+// signed-in user is, where their calendars live, and what is in that
+// collection. RFC 5397 and RFC 4791 define the first two properties; the
+// third is a plain WebDAV listing.
+function discoverPrincipalPropfind() {
+  return '<?xml version="1.0" encoding="utf-8"?>'
+    + '<d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>'
+}
+
+function discoverHomeSetPropfind() {
+  return '<?xml version="1.0" encoding="utf-8"?>'
+    + '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+    + '<d:prop><c:calendar-home-set/></d:prop></d:propfind>'
+}
+
+function discoverCollectionsPropfind() {
+  return '<?xml version="1.0" encoding="utf-8"?>'
+    + '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" '
+    + 'xmlns:ic="http://apple.com/ns/ical/">'
+    + '<d:prop><d:resourcetype/><d:displayname/><ic:calendar-color/>'
+    + '<c:supported-calendar-component-set/></d:prop></d:propfind>'
+}
+
 function decodeXml(value) {
   return String(value || "")
     .replace(/&lt;/g, "<")
@@ -109,14 +132,37 @@ function tagText(block, localName) {
   return match ? decodeXmlText(match[1]) : ""
 }
 
-function caldavResponses(xml) {
+// The raw inner blocks of every <d:response> in a multistatus reply, shared
+// by the REPORT parser below and by calendar discovery: both walk the same
+// envelope and differ only in which properties they read out of it.
+function multistatusResponses(xml) {
   var input = String(xml || "")
   var pattern = /<(?:[A-Za-z0-9_-]+:)?response(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?response>/gi
   var out = []
   var match
-  while ((match = pattern.exec(input)) !== null) {
-    var data = tagText(match[1], "calendar-data")
-    if (data !== "") out.push({ href: tagText(match[1], "href"), data: data })
+  while ((match = pattern.exec(input)) !== null) out.push(match[1])
+  return out
+}
+
+// A block's inner XML for a container element, undecoded: a discovery prop
+// such as <d:current-user-principal> holds a child <d:href>, not text of its
+// own, so the caller can run tagText on what this returns rather than on
+// entity-decoded markup.
+function tagBlock(block, localName) {
+  var name = String(localName || "").replace(/[^A-Za-z0-9_-]/g, "")
+  if (name === "") return ""
+  var pattern = new RegExp("<(?:[A-Za-z0-9_-]+:)?" + name
+    + "(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[A-Za-z0-9_-]+:)?" + name + ">", "i")
+  var match = pattern.exec(String(block || ""))
+  return match ? match[1] : ""
+}
+
+function caldavResponses(xml) {
+  var responses = multistatusResponses(xml)
+  var out = []
+  for (var i = 0; i < responses.length; i++) {
+    var data = tagText(responses[i], "calendar-data")
+    if (data !== "") out.push({ href: tagText(responses[i], "href"), data: data })
   }
   return out
 }
@@ -630,6 +676,103 @@ function caldavEventUrl(sourceUrl, event) {
   if (uid === "") return ""
   var root = base.charAt(base.length - 1) === "/" ? base : base + "/"
   return root + encodeURIComponent(uid) + ".ics"
+}
+
+// Resolves a PROPFIND-discovered href against the account address's origin,
+// on the same rule caldavEventUrl applies to a server-written event href: an
+// absolute answer is accepted only on the account's own scheme, host and
+// port. Discovery walks two more server answers than a REPORT ever does
+// before it reaches a calendar's own address, so this is the one place that
+// judgement has to hold for every one of them — a compromised or
+// misconfigured principal or calendar-home-set response must not be able to
+// hand this account's credentials to a different origin than the one the
+// user typed in Settings.
+function resolveDiscoveredUrl(accountUrl, href) {
+  var base = String(accountUrl || "")
+  var origin = urlOrigin(base)
+  if (origin === "") return ""
+  var value = String(href || "")
+  if (value === "" || /\s/.test(value)) return ""
+  if (/^https:\/\//i.test(value) || value.substring(0, 2) === "//") {
+    var candidate = value.substring(0, 2) === "//" ? "https:" + value : value
+    return urlOrigin(candidate) === origin ? candidate : ""
+  }
+  if (value.charAt(0) === "/") return urlAuthority(base) + value
+  var collection = base.charAt(base.length - 1) === "/" ? base : base + "/"
+  return collection + value
+}
+
+// The href a PROPFIND response gives for a container property such as
+// <d:current-user-principal> or <c:calendar-home-set>, resolved against the
+// request's own origin. Absent when the server did not answer the property
+// at all, which is the ordinary shape of "not supported here" — a 404
+// propstat still parses, its <d:prop> just has nothing inside the container.
+function discoveredContainerUrl(xml, accountUrl, containerLocalName) {
+  var responses = multistatusResponses(xml)
+  for (var i = 0; i < responses.length; i++) {
+    var inner = tagBlock(responses[i], containerLocalName)
+    if (inner === "") continue
+    var href = tagText(inner, "href")
+    if (href === "") continue
+    var resolved = resolveDiscoveredUrl(accountUrl, href)
+    if (resolved !== "") return resolved
+  }
+  return ""
+}
+
+function discoveredPrincipalUrl(xml, accountUrl) {
+  return discoveredContainerUrl(xml, accountUrl, "current-user-principal")
+}
+
+function discoveredHomeSetUrl(xml, accountUrl) {
+  return discoveredContainerUrl(xml, accountUrl, "calendar-home-set")
+}
+
+// A resourcetype naming a real calendar, not the scheduling inbox or outbox
+// CalDAV Scheduling (RFC 6638) adds beside it: both also carry {CALDAV:}calendar,
+// but neither holds events a user meant to add here.
+function isCalendarCollection(resourceTypeBlock) {
+  if (!/<(?:[A-Za-z0-9_-]+:)?calendar\b/i.test(resourceTypeBlock)) return false
+  if (/<(?:[A-Za-z0-9_-]+:)?schedule-inbox\b/i.test(resourceTypeBlock)) return false
+  if (/<(?:[A-Za-z0-9_-]+:)?schedule-outbox\b/i.test(resourceTypeBlock)) return false
+  return true
+}
+
+// Whether the collection's declared component set includes VEVENT. A
+// collection that declares a set without VEVENT in it is a task list or a
+// journal, not a calendar this feature reads events from; one that declares
+// no set at all has not said either way, so it is kept rather than dropped.
+function supportsVevent(componentSetBlock) {
+  if (componentSetBlock === "") return true
+  return /<(?:[A-Za-z0-9_-]+:)?comp\b[^>]*\bname\s*=\s*["']VEVENT["']/i.test(componentSetBlock)
+}
+
+function discoveredCalendarColor(value) {
+  var match = /^#([0-9a-fA-F]{6})/.exec(String(value || "").trim())
+  return match ? ("#" + match[1].toLowerCase()) : ""
+}
+
+// The calendar collections a Depth:1 PROPFIND on the calendar-home-set
+// found, each resolved to an address on the account's own origin. A response
+// whose href cannot be resolved there is dropped rather than surfaced with a
+// blank address: nothing offered here can be added without ending up back
+// through resolveDiscoveredUrl regardless.
+function discoveredCalendars(xml, homeSetUrl) {
+  var responses = multistatusResponses(xml)
+  var out = []
+  for (var i = 0; i < responses.length; i++) {
+    var block = responses[i]
+    if (!isCalendarCollection(tagBlock(block, "resourcetype"))) continue
+    if (!supportsVevent(tagBlock(block, "supported-calendar-component-set"))) continue
+    var url = resolveDiscoveredUrl(homeSetUrl, tagText(block, "href"))
+    if (url === "") continue
+    out.push({
+      url: url,
+      name: tagText(block, "displayname") || "Calendar",
+      color: discoveredCalendarColor(tagText(block, "calendar-color"))
+    })
+  }
+  return out
 }
 
 function compareEvents(left, right) {
