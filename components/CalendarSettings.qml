@@ -457,6 +457,10 @@ Column {
   }
 
   function cancelDiscovery() {
+    // Stops the request itself, not only this panel's view of it — without
+    // this, an abandoned search kept running and could still land on
+    // whatever the panel shows next, including a search typed after it.
+    if (root.controller) root.controller.cancelDiscovery()
     root.discovering = false
     root.discoveryResults = []
     root.discoverySelected = ({})

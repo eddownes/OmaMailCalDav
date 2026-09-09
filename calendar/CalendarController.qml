@@ -54,12 +54,24 @@ Item {
   // more and ends the same way addCalDavCalendar does only after every one
   // of them is stored.
   property var sourcesBeingSaved: []
+  // How many addDiscoveredCalendars started with, so a keyring failure partway
+  // through a batch can say how many of them already have a password rather
+  // than just "could not save the password" — the config write that added
+  // all of them already committed, and is not rolled back on this failure.
+  property int sourcesBeingSavedTotal: 0
   property bool savingSource: false
   property bool discovering: false
   property string discoveryStage: ""
   property string discoveryAccountUrl: ""
   property string discoveryStageUrl: ""
   property string discoveryCredentials: ""
+  // Set for the one exited() this discoveryTransport run produces because
+  // cancelDiscovery() killed it, not because a server answered. Without it,
+  // that exited() is indistinguishable from a real reply: it would run the
+  // next stage or finishDiscovery with state cancelDiscovery() already
+  // cleared, and a fresh search started right after a cancel could receive
+  // the abandoned one's results once its request finally lands.
+  property bool discoveryCancelled: false
   property bool clockRunning: false
   property double nowMs: Date.now()
   property bool refreshAfterSourceWrite: false
@@ -445,6 +457,24 @@ Item {
     calendarsDiscovered(ok, String(error || ""), Array.isArray(calendars) ? calendars : [])
   }
 
+  // Stops a discovery in progress: killed, not merely disowned. Without
+  // this, a cancelled request kept running to whatever deadline curl gave
+  // it and controller.discovering stayed true until it did — the caller's
+  // "Find calendars" button would refuse a retry for as long as the
+  // abandoned request was still in flight, and once it did land,
+  // discoveryTransport.onExited would run the next PROPFIND stage or call
+  // finishDiscovery with a fresh search's URL already in discoveryAccountUrl,
+  // delivering the abandoned search's answer as the new one's.
+  function cancelDiscovery() {
+    if (!discovering) return
+    discoveryCancelled = true
+    discoveryTransport.running = false
+    discovering = false
+    discoveryStage = ""
+    discoveryStageUrl = ""
+    discoveryCredentials = ""
+  }
+
   // Adds every calendar the caller picked from a discoverCalendars result in
   // one config write, then stores the one account password against each of
   // them in turn — the same password, because CalDAV discovery only ever
@@ -471,6 +501,7 @@ Item {
     }
     sourceBeingSaved = null
     sourcesBeingSaved = added
+    sourcesBeingSavedTotal = added.length
     sourceSecret = String(secret)
     sourceWritePayload = Sources.serialize(next)
     refreshAfterSourceWrite = true
@@ -816,10 +847,16 @@ Item {
     onStarted: write(root.sourceSecret + "\n")
     onExited: function(exitCode) {
       if (exitCode !== 0) {
+        // The one that just failed was already shifted off the queue before
+        // this ran, so it is not counted as saved.
+        var saved = root.sourcesBeingSavedTotal - root.sourcesBeingSaved.length - 1
         root.sourceSecret = ""
         root.sourcesBeingSaved = []
         root.savingSource = false
-        root.calendarSaved(false, String(discoveryPasswordError.text || "Could not save the password"))
+        var detail = String(discoveryPasswordError.text || "Could not save the password")
+        root.calendarSaved(false, saved > 0
+          ? saved + " of " + root.sourcesBeingSavedTotal + " calendars were added before this failed: " + detail
+          : detail)
         return
       }
       root.storeNextDiscoveryPassword()
@@ -834,6 +871,11 @@ Item {
     stderr: StdioCollector { waitForEnd: true }
     onStarted: { write(requestLine); requestLine = "" }
     onExited: function(exitCode) {
+      // cancelDiscovery() killing this process produces an exited() of its
+      // own, indistinguishable from a real reply by exitCode alone — this is
+      // the one signal that tells the two apart, and it must be consumed
+      // before anything below reads state cancelDiscovery() already cleared.
+      if (root.discoveryCancelled) { root.discoveryCancelled = false; return }
       var lines = String(discoveryOutput.text || "").split("\n")
       var status = Number(lines[0])
       var body = lines.length > 1

@@ -72,11 +72,16 @@ function discoverHomeSetPropfind() {
     + '<d:prop><c:calendar-home-set/></d:prop></d:propfind>'
 }
 
+// No calendar-color property: a discovered calendar's colorKey is assigned
+// the same way every other source's is, a hash of its id through
+// Palette.defaultKey, because AGENTS.md's Colors section holds here too — a
+// server's own literal colour has no path into a palette that is themed, not
+// configured, and asking for a property this never reads would only be
+// asking for it.
 function discoverCollectionsPropfind() {
   return '<?xml version="1.0" encoding="utf-8"?>'
-    + '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" '
-    + 'xmlns:ic="http://apple.com/ns/ical/">'
-    + '<d:prop><d:resourcetype/><d:displayname/><ic:calendar-color/>'
+    + '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+    + '<d:prop><d:resourcetype/><d:displayname/>'
     + '<c:supported-calendar-component-set/></d:prop></d:propfind>'
 }
 
@@ -135,6 +140,13 @@ function tagText(block, localName) {
 // The raw inner blocks of every <d:response> in a multistatus reply, shared
 // by the REPORT parser below and by calendar discovery: both walk the same
 // envelope and differ only in which properties they read out of it.
+//
+// Neither looks at which <d:propstat><d:status> a property came under: a
+// server that could not answer a property is expected to leave it out of
+// every propstat's <d:prop> rather than echo it empty under a 404 one, so
+// the first occurrence of a named element anywhere in the response is
+// already the answered one. This is the same trust every CalDAV call here
+// already places in a compliant server, not a new one.
 function multistatusResponses(xml) {
   var input = String(xml || "")
   var pattern = /<(?:[A-Za-z0-9_-]+:)?response(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_-]+:)?response>/gi
@@ -786,11 +798,6 @@ function supportsVevent(componentSetBlock) {
   return /<(?:[A-Za-z0-9_-]+:)?comp\b[^>]*\bname\s*=\s*["']VEVENT["']/i.test(componentSetBlock)
 }
 
-function discoveredCalendarColor(value) {
-  var match = /^#([0-9a-fA-F]{6})/.exec(String(value || "").trim())
-  return match ? ("#" + match[1].toLowerCase()) : ""
-}
-
 // The calendar collections a Depth:1 PROPFIND on the calendar-home-set
 // found, each resolved to an address on the account's own origin. A response
 // whose href cannot be resolved there is dropped rather than surfaced with a
@@ -805,11 +812,7 @@ function discoveredCalendars(xml, homeSetUrl) {
     if (!supportsVevent(tagBlock(block, "supported-calendar-component-set"))) continue
     var url = resolveDiscoveredUrl(homeSetUrl, tagText(block, "href"))
     if (url === "") continue
-    out.push({
-      url: url,
-      name: tagText(block, "displayname") || "Calendar",
-      color: discoveredCalendarColor(tagText(block, "calendar-color"))
-    })
+    out.push({ url: url, name: tagText(block, "displayname") || "Calendar" })
   }
   return out
 }

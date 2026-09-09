@@ -517,18 +517,23 @@ assert.strictEqual(feed.discoveredHomeSetUrl(homeSetXml, "https://dav.example/pr
   "https://dav.example/dav/me/calendars/")
 
 const collectionsXml = '<?xml version="1.0"?>'
-  + '<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" '
-  + 'xmlns:ic="http://apple.com/ns/ical/">'
-  // A real calendar with a colour and an explicit VEVENT-supporting set.
+  + '<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+  // A real calendar with an explicit VEVENT-supporting set.
   + '<d:response><d:href>/dav/me/calendars/work/</d:href><d:propstat><d:prop>'
   + '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
-  + '<d:displayname>Work</d:displayname><ic:calendar-color>#4FA8DEFF</ic:calendar-color>'
+  + '<d:displayname>Work</d:displayname>'
   + '<c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>'
   + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
   // A calendar that declares no component set at all: kept, not dropped.
   + '<d:response><d:href>/dav/me/calendars/family/</d:href><d:propstat><d:prop>'
   + '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
   + '<d:displayname>Family</d:displayname>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  // A same-directory relative href, with no leading slash: resolved against
+  // the home-set's own path, the way a bare filename resolves in a browser.
+  + '<d:response><d:href>shared/</d:href><d:propstat><d:prop>'
+  + '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
+  + '<d:displayname>Shared</d:displayname>'
   + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
   // A task list: declares a component set with no VEVENT in it.
   + '<d:response><d:href>/dav/me/calendars/tasks/</d:href><d:propstat><d:prop>'
@@ -548,12 +553,11 @@ const collectionsXml = '<?xml version="1.0"?>'
   + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
   + '</d:multistatus>'
 const discovered = feed.discoveredCalendars(collectionsXml, "https://dav.example/dav/me/calendars/")
-assert.strictEqual(discovered.length, 2)
+assert.strictEqual(discovered.length, 3)
 assert.deepStrictEqual(JSON.parse(JSON.stringify(discovered.map(function(c) { return c.name }))),
-  ["Work", "Family"])
+  ["Work", "Family", "Shared"])
 assert.strictEqual(discovered[0].url, "https://dav.example/dav/me/calendars/work/")
-assert.strictEqual(discovered[0].color, "#4fa8de")
-assert.strictEqual(discovered[1].color, "")
+assert.strictEqual(discovered[2].url, "https://dav.example/dav/me/calendars/shared/")
 
 // Resolution against the home-set's own origin, the same rule caldavEventUrl
 // applies to a written event's href.
