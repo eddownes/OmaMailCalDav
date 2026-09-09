@@ -568,4 +568,37 @@ assert.strictEqual(feed.discoveredCalendars(
   crossOriginCollectionsXml, "https://dav.example/dav/me/calendars/").length, 0,
   "a collection reported on a different origin is dropped, not offered")
 
+// The RFC 6764 well-known redirect: a bare server address that answers 404
+// on its own (Fastmail does exactly this) still names the real service
+// through /.well-known/caldav, which curl is never told to follow itself.
+const redirectHeaders = "HTTP/1.1 301 Moved Permanently\r\n"
+  + "Location: https://dav.example/dav/calendars\r\n"
+  + "Content-Length: 0\r\n"
+assert.strictEqual(feed.discoveredWellKnownUrl(redirectHeaders, "https://dav.example/"),
+  "https://dav.example/dav/calendars")
+
+// A relative Location resolves against the account's own origin too.
+const relativeRedirectHeaders = "HTTP/1.1 302 Found\r\nLocation: /dav/calendars\r\n"
+assert.strictEqual(feed.discoveredWellKnownUrl(relativeRedirectHeaders, "https://dav.example/"),
+  "https://dav.example/dav/calendars")
+
+// A redirect naming a different origin is refused, the same as any other
+// discovered address.
+const crossOriginRedirectHeaders = "HTTP/1.1 301 Moved Permanently\r\n"
+  + "Location: https://evil.example/dav/calendars\r\n"
+assert.strictEqual(feed.discoveredWellKnownUrl(crossOriginRedirectHeaders, "https://dav.example/"), "")
+
+// No redirect at all — a direct 404, a 401, or a real 207 — leaves nothing
+// for the caller to follow.
+assert.strictEqual(feed.discoveredWellKnownUrl("HTTP/1.1 404 Not Found\r\n", "https://dav.example/"), "")
+assert.strictEqual(feed.discoveredWellKnownUrl("HTTP/1.1 207 Multi-Status\r\n", "https://dav.example/"), "")
+assert.strictEqual(feed.discoveredWellKnownUrl("", "https://dav.example/"), "")
+
+// The last status and Location win when a response dump holds more than one
+// (an early 100 Continue, or a redirect curl received but did not follow).
+const layeredHeaders = "HTTP/1.1 100 Continue\r\n\r\n"
+  + "HTTP/1.1 301 Moved Permanently\r\nLocation: https://dav.example/dav/calendars\r\n"
+assert.strictEqual(feed.discoveredWellKnownUrl(layeredHeaders, "https://dav.example/"),
+  "https://dav.example/dav/calendars")
+
 console.log("test_calendar_feed.js ok")
