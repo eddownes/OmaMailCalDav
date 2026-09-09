@@ -1,4 +1,6 @@
-# Omamail
+# OmaMailCalDav
+
+> A fork of [huacnlee/omamail](https://github.com/huacnlee/omamail) that adds CalDAV account discovery. Everything else in this document describes upstream Omamail unchanged; see [About this fork](#about-this-fork) below for what's different and why.
 
 **Your mail as a native Omarchy window — not a browser tab.**
 
@@ -16,6 +18,26 @@ And with mini size mode:
 <img width="265" alt="Omamail - Mini size: the message list" src="docs/images/mini-list.webp" /> <img width="265" alt="Omamail - Mini size: one message open" src="docs/images/mini-message.webp" /> <img width="265" alt="Omamail - Mini size: writing a new message" src="docs/images/mini-compose.webp" />
 
 Works with **Gmail**, **HEY**, **Fastmail**, **iCloud Mail**, **Outlook**, **Yahoo**, **Zoho**, **GMX**, **Proton Mail** (through its Bridge), and any server that speaks **JMAP** or **IMAP** — including one you run yourself.
+
+## About this fork
+
+Upstream Omamail's CalDAV support (see [Connecting your mailbox](#connecting-your-mailbox) below) is one hand-entered calendar at a time: a name, the calendar's own collection URL, a username and a password, added one by one in Settings. That's fine for a single calendar, but it doesn't scale to an account with several — Fastmail, Nextcloud, Radicale, Baïkal and most other CalDAV servers hand out one collection per calendar under a shared home address, and finding each one's exact URL by hand means digging through provider-specific docs or a web-based calendar client's "share" dialog for every calendar you want.
+
+This fork adds **calendar discovery**: a "Discover calendars..." button next to "Add a calendar" in Settings → Calendars. Give it one CalDAV server address and one set of credentials, and it walks the standard discovery chain a full-featured CalDAV client would —
+
+1. **`.well-known/caldav`** (RFC 6764) — so a bare provider address (`https://caldav.fastmail.com`, which some providers answer with a plain 404 unless you know the real path) still resolves, by following the one redirect it publishes for exactly this purpose.
+2. **`current-user-principal`** (RFC 5397) — who you are, as this server sees the credentials you gave it.
+3. **`calendar-home-set`** (RFC 4791) — where your calendars live.
+4. A `Depth: 1` listing of that collection — every calendar in it, with its display name and colour, filtered to actual calendars (task lists and the CalDAV Scheduling inbox/outbox are left out).
+
+You get a checklist of what was found; the ones you pick are added together under the same password, in one keyring write per calendar.
+
+Every server-supplied address along that chain — the well-known redirect's `Location`, the principal href, the home-set href, each calendar's own href — is resolved and held to the *account's own origin* before it's used for anything, on the same rule upstream Omamail already applies to a CalDAV server's answer for where to write an event (`Calendar.caldavEventUrl`). A response naming a different host or port is dropped rather than followed, so discovery can't be redirected into sending this account's credentials somewhere else. The new transport (`scripts/calendar-propfind.sh`) follows the project's own established pattern for talking to a CalDAV server: credentials cross base64-encoded on one line of stdin, never through `argv`, HTTPS only, curl never told to follow a redirect itself.
+
+Nothing else about Omamail is changed. The plugin id, settings schema, and every other feature are exactly upstream's; this fork exists to track upstream and stay a plain superset of it. `git remote -v` in this checkout still has `upstream` pointed at `huacnlee/omamail` for that reason.
+
+- Changed: `calendar/Calendar.js`, `calendar/CalendarController.qml`, `components/CalendarSettings.qml`, plus the new `scripts/calendar-propfind.sh` and its tests.
+- Unchanged: everything else — every other mailbox feature, the manifest, the plugin id.
 
 ## Features
 
@@ -81,8 +103,10 @@ Three parts, one plugin:
 ## Add it to Omarchy
 
 ```bash
-omarchy plugin add https://github.com/huacnlee/omamail.git --enable
+omarchy plugin add https://github.com/eddownes/OmaMailCalDav.git --enable
 ```
+
+(Upstream, with no CalDAV discovery: `omarchy plugin add https://github.com/huacnlee/omamail.git --enable`.)
 
 Then click the envelope in the bar. To open it from the keyboard, add this to
 `~/.config/hypr/bindings.lua`:
@@ -324,7 +348,9 @@ How to send a change — there is no issue tracker — is in
 
 Omamail is an independent project and is not affiliated with Google, Microsoft or 37signals. Gmail is a trademark of Google LLC; Outlook is a trademark of Microsoft Corporation; HEY is a trademark of 37signals, LLC.
 
-Licensed under the [MIT License](LICENSE).
+This repository is a fork of [huacnlee/omamail](https://github.com/huacnlee/omamail) — all credit for Omamail itself belongs there; see [About this fork](#about-this-fork) above for what this repository adds on top of it.
+
+Licensed under the [MIT License](LICENSE), same as upstream.
 
 [hey-cli]: https://github.com/basecamp/hey-cli
 [microsoft-mail-oauth]: https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth
