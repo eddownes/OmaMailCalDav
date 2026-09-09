@@ -470,4 +470,102 @@ assert.ok(googleUrl.indexOf("singleEvents=true") > 0)
 assert.ok(googleUrl.indexOf("orderBy=startTime") > 0)
 assert.ok(googleUrl.indexOf("timeMin=2026-08-01T00%3A00%3A00.000Z") > 0)
 
+// ------------------------------------------------------ calendar discovery
+
+assert.ok(feed.discoverPrincipalPropfind().indexOf("<d:current-user-principal/>") >= 0)
+assert.ok(feed.discoverHomeSetPropfind().indexOf("<c:calendar-home-set/>") >= 0)
+const collectionsBody = feed.discoverCollectionsPropfind()
+assert.ok(collectionsBody.indexOf("<d:resourcetype/>") >= 0)
+assert.ok(collectionsBody.indexOf("<c:supported-calendar-component-set/>") >= 0)
+
+const principalXml = '<?xml version="1.0"?>'
+  + '<d:multistatus xmlns:d="DAV:">'
+  + '<d:response><d:href>/</d:href><d:propstat><d:prop>'
+  + '<d:current-user-principal><d:href>/principals/me/</d:href></d:current-user-principal>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  + '</d:multistatus>'
+assert.strictEqual(feed.discoveredPrincipalUrl(principalXml, "https://dav.example/"),
+  "https://dav.example/principals/me/")
+
+// A server that does not support the property still answers 207: the prop
+// element is simply empty, and that reads the same as "not found" here.
+const emptyPrincipalXml = '<?xml version="1.0"?>'
+  + '<d:multistatus xmlns:d="DAV:">'
+  + '<d:response><d:href>/</d:href><d:propstat><d:prop/>'
+  + '<d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>'
+  + '</d:multistatus>'
+assert.strictEqual(feed.discoveredPrincipalUrl(emptyPrincipalXml, "https://dav.example/"), "")
+
+// A principal response naming a different origin is refused before its
+// address is ever used as the next request's target — discovery cannot be
+// handed off to a server the user did not configure.
+const crossOriginPrincipalXml = '<?xml version="1.0"?>'
+  + '<d:multistatus xmlns:d="DAV:">'
+  + '<d:response><d:href>/</d:href><d:propstat><d:prop>'
+  + '<d:current-user-principal><d:href>https://evil.example/principals/me/</d:href></d:current-user-principal>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  + '</d:multistatus>'
+assert.strictEqual(feed.discoveredPrincipalUrl(crossOriginPrincipalXml, "https://dav.example/"), "")
+
+const homeSetXml = '<?xml version="1.0"?>'
+  + '<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+  + '<d:response><d:href>/principals/me/</d:href><d:propstat><d:prop>'
+  + '<c:calendar-home-set><d:href>/dav/me/calendars/</d:href></c:calendar-home-set>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  + '</d:multistatus>'
+assert.strictEqual(feed.discoveredHomeSetUrl(homeSetXml, "https://dav.example/principals/me/"),
+  "https://dav.example/dav/me/calendars/")
+
+const collectionsXml = '<?xml version="1.0"?>'
+  + '<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" '
+  + 'xmlns:ic="http://apple.com/ns/ical/">'
+  // A real calendar with a colour and an explicit VEVENT-supporting set.
+  + '<d:response><d:href>/dav/me/calendars/work/</d:href><d:propstat><d:prop>'
+  + '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
+  + '<d:displayname>Work</d:displayname><ic:calendar-color>#4FA8DEFF</ic:calendar-color>'
+  + '<c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  // A calendar that declares no component set at all: kept, not dropped.
+  + '<d:response><d:href>/dav/me/calendars/family/</d:href><d:propstat><d:prop>'
+  + '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
+  + '<d:displayname>Family</d:displayname>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  // A task list: declares a component set with no VEVENT in it.
+  + '<d:response><d:href>/dav/me/calendars/tasks/</d:href><d:propstat><d:prop>'
+  + '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
+  + '<d:displayname>Tasks</d:displayname>'
+  + '<c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  // The scheduling inbox: carries {CALDAV:}calendar too, but is not one.
+  + '<d:response><d:href>/dav/me/calendars/inbox/</d:href><d:propstat><d:prop>'
+  + '<d:resourcetype><d:collection/><c:calendar/><c:schedule-inbox/></d:resourcetype>'
+  + '<d:displayname>Inbox</d:displayname>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  // The home-set collection itself: a plain collection, not a calendar.
+  + '<d:response><d:href>/dav/me/calendars/</d:href><d:propstat><d:prop>'
+  + '<d:resourcetype><d:collection/></d:resourcetype>'
+  + '<d:displayname>calendars</d:displayname>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  + '</d:multistatus>'
+const discovered = feed.discoveredCalendars(collectionsXml, "https://dav.example/dav/me/calendars/")
+assert.strictEqual(discovered.length, 2)
+assert.deepStrictEqual(JSON.parse(JSON.stringify(discovered.map(function(c) { return c.name }))),
+  ["Work", "Family"])
+assert.strictEqual(discovered[0].url, "https://dav.example/dav/me/calendars/work/")
+assert.strictEqual(discovered[0].color, "#4fa8de")
+assert.strictEqual(discovered[1].color, "")
+
+// Resolution against the home-set's own origin, the same rule caldavEventUrl
+// applies to a written event's href.
+const crossOriginCollectionsXml = '<?xml version="1.0"?>'
+  + '<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+  + '<d:response><d:href>https://evil.example/work/</d:href><d:propstat><d:prop>'
+  + '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'
+  + '<d:displayname>Work</d:displayname>'
+  + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>'
+  + '</d:multistatus>'
+assert.strictEqual(feed.discoveredCalendars(
+  crossOriginCollectionsXml, "https://dav.example/dav/me/calendars/").length, 0,
+  "a collection reported on a different origin is dropped, not offered")
+
 console.log("test_calendar_feed.js ok")

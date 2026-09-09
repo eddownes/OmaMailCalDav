@@ -48,7 +48,18 @@ Item {
   property string sourceWritePayload: ""
   property string sourceSecret: ""
   property var sourceBeingSaved: null
+  // The batch a discovered-calendars add is writing passwords for, kept
+  // apart from sourceBeingSaved: that one is a single manually-added
+  // calendar and ends in exactly one keyring write, while this is zero or
+  // more and ends the same way addCalDavCalendar does only after every one
+  // of them is stored.
+  property var sourcesBeingSaved: []
   property bool savingSource: false
+  property bool discovering: false
+  property string discoveryStage: ""
+  property string discoveryAccountUrl: ""
+  property string discoveryStageUrl: ""
+  property string discoveryCredentials: ""
   property bool clockRunning: false
   property double nowMs: Date.now()
   property bool refreshAfterSourceWrite: false
@@ -116,6 +127,7 @@ Item {
 
   signal passwordSaved(bool ok, string error)
   signal calendarSaved(bool ok, string error)
+  signal calendarsDiscovered(bool ok, string error, var calendars)
   signal eventCreated(bool ok, string error)
   signal eventUpdated(bool ok, string error)
   signal eventDeleted(bool ok, string error)
@@ -383,6 +395,101 @@ Item {
     savingSource = true
     sourceWriter.command = [pluginDir + "/scripts/config-store.sh", "calendars.json"]
     sourceWriter.running = true
+  }
+
+  // Finds every calendar collection under one CalDAV account rather than
+  // asking for each calendar's own address by hand: PROPFIND for the
+  // signed-in principal, PROPFIND that for the calendar-home-set, then
+  // PROPFIND the home-set at Depth:1 for its children. A server that does
+  // not answer one of the first two steps still gets a chance at the last
+  // one against whatever address was given — many servers accept a
+  // home-set or even a calendar collection URL directly, and the discovery
+  // request that URL sees is server-supplied, so resolveDiscoveredUrl keeps
+  // holding it to the account's own origin at every step.
+  function discoverCalendars(accountUrl, username, password) {
+    if (discovering || savingSource) return
+    var url = String(accountUrl || "").trim()
+    var user = String(username || "").trim()
+    var pass = String(password || "")
+    if (!/^https:\/\//i.test(url)) {
+      calendarsDiscovered(false, "Use an HTTPS CalDAV server address", [])
+      return
+    }
+    if (user === "") { calendarsDiscovered(false, "Add the account username", []); return }
+    if (pass === "") { calendarsDiscovered(false, "Add the account password", []); return }
+    discoveryAccountUrl = url
+    discoveryCredentials = user + ":" + pass
+    pass = ""
+    discovering = true
+    runDiscoveryStep("principal", url, Calendar.discoverPrincipalPropfind(), "0")
+  }
+
+  function runDiscoveryStep(stage, url, body, depth) {
+    discoveryStage = stage
+    discoveryStageUrl = url
+    discoveryTransport.command = [pluginDir + "/scripts/calendar-propfind.sh"]
+    discoveryTransport.requestLine = Mail.encodeBase64(url) + " "
+      + Mail.encodeBase64(discoveryCredentials) + " "
+      + Mail.encodeBase64(depth) + " " + Mail.encodeBase64(body) + "\n"
+    discoveryTransport.running = true
+  }
+
+  function finishDiscovery(ok, error, calendars) {
+    discovering = false
+    discoveryStage = ""
+    discoveryStageUrl = ""
+    discoveryCredentials = ""
+    calendarsDiscovered(ok, String(error || ""), Array.isArray(calendars) ? calendars : [])
+  }
+
+  // Adds every calendar the caller picked from a discoverCalendars result in
+  // one config write, then stores the one account password against each of
+  // them in turn — the same password, because CalDAV discovery only ever
+  // runs against one set of credentials.
+  function addDiscoveredCalendars(selected, username, secret) {
+    if (savingSource) return
+    var values = Array.isArray(selected) ? selected : []
+    if (values.length === 0) { calendarSaved(false, "Choose at least one calendar"); return }
+    if (String(secret || "") === "") { calendarSaved(false, "Add the account password"); return }
+    var next = sourceList
+    var added = []
+    for (var i = 0; i < values.length; i++) {
+      var candidate = { kind: "caldav", name: values[i].name, url: values[i].url,
+        username: String(username || "") }
+      candidate.id = Sources.sourceId(candidate)
+      var checked = Sources.validate(candidate)
+      if (!checked.ok) continue
+      next = Sources.add(next, checked.source)
+      added.push(checked.source)
+    }
+    if (added.length === 0) {
+      calendarSaved(false, "None of the discovered calendars could be added")
+      return
+    }
+    sourceBeingSaved = null
+    sourcesBeingSaved = added
+    sourceSecret = String(secret)
+    sourceWritePayload = Sources.serialize(next)
+    refreshAfterSourceWrite = true
+    savingSource = true
+    sourceWriter.command = [pluginDir + "/scripts/config-store.sh", "calendars.json"]
+    sourceWriter.running = true
+  }
+
+  function storeNextDiscoveryPassword() {
+    if (sourcesBeingSaved.length === 0) {
+      sourceSecret = ""
+      savingSource = false
+      calendarSaved(true, "")
+      if (rangeStart && rangeEnd) refresh(rangeStart, rangeEnd)
+      return
+    }
+    var pending = sourcesBeingSaved.slice()
+    var source = pending.shift()
+    sourcesBeingSaved = pending
+    discoveryPasswordStore.command = [pluginDir + "/scripts/keyring-store.sh"]
+      .concat(Sources.keyringAttributes(source.id))
+    discoveryPasswordStore.running = true
   }
 
   function removeCalendar(sourceId) {
@@ -657,11 +764,16 @@ Item {
       if (exitCode !== 0) {
         root.savingSource = false
         root.sourceSecret = ""
+        root.sourcesBeingSaved = []
         root.refreshAfterSourceWrite = false
         root.calendarSaved(false, String(sourceWriteError.text || "Could not save the calendar"))
         return
       }
       root.sourceList = Sources.load(root.sourceWritePayload)
+      if (root.sourcesBeingSaved.length > 0) {
+        root.storeNextDiscoveryPassword()
+        return
+      }
       if (!root.sourceBeingSaved) {
         root.savingSource = false
         root.calendarSaved(true, "")
@@ -691,6 +803,60 @@ Item {
       }
       root.calendarSaved(true, "")
       if (root.rangeStart && root.rangeEnd) root.refresh(root.rangeStart, root.rangeEnd)
+    }
+  }
+
+  Process {
+    id: discoveryPasswordStore
+    stdinEnabled: true
+    stderr: StdioCollector { id: discoveryPasswordError; waitForEnd: true }
+    onStarted: write(root.sourceSecret + "\n")
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.sourceSecret = ""
+        root.sourcesBeingSaved = []
+        root.savingSource = false
+        root.calendarSaved(false, String(discoveryPasswordError.text || "Could not save the password"))
+        return
+      }
+      root.storeNextDiscoveryPassword()
+    }
+  }
+
+  Process {
+    id: discoveryTransport
+    property string requestLine: ""
+    stdinEnabled: true
+    stdout: StdioCollector { id: discoveryOutput; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onStarted: { write(requestLine); requestLine = "" }
+    onExited: function(exitCode) {
+      var lines = String(discoveryOutput.text || "").split("\n")
+      var status = Number(lines[0])
+      var body = lines.length > 1
+        ? Mail.decodeBase64Url(lines[1].replace(/\+/g, "-").replace(/\//g, "_")) : ""
+      var ok = exitCode === 0 && status === 0
+      var requestUrl = root.discoveryStageUrl
+      if (root.discoveryStage === "principal") {
+        var principalUrl = (ok ? Calendar.discoveredPrincipalUrl(body, requestUrl) : "") || requestUrl
+        root.runDiscoveryStep("homeset", principalUrl, Calendar.discoverHomeSetPropfind(), "0")
+        return
+      }
+      if (root.discoveryStage === "homeset") {
+        var homeSetUrl = (ok ? Calendar.discoveredHomeSetUrl(body, requestUrl) : "") || requestUrl
+        root.runDiscoveryStep("collections", homeSetUrl, Calendar.discoverCollectionsPropfind(), "1")
+        return
+      }
+      if (!ok) {
+        root.finishDiscovery(false, "Could not read calendars from that address", [])
+        return
+      }
+      var calendars = Calendar.discoveredCalendars(body, requestUrl)
+      if (calendars.length === 0) {
+        root.finishDiscovery(false, "No calendars were found at that address", [])
+        return
+      }
+      root.finishDiscovery(true, "", calendars)
     }
   }
 
