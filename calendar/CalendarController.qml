@@ -398,14 +398,15 @@ Item {
   }
 
   // Finds every calendar collection under one CalDAV account rather than
-  // asking for each calendar's own address by hand: PROPFIND for the
-  // signed-in principal, PROPFIND that for the calendar-home-set, then
-  // PROPFIND the home-set at Depth:1 for its children. A server that does
-  // not answer one of the first two steps still gets a chance at the last
-  // one against whatever address was given — many servers accept a
-  // home-set or even a calendar collection URL directly, and the discovery
-  // request that URL sees is server-supplied, so resolveDiscoveredUrl keeps
-  // holding it to the account's own origin at every step.
+  // asking for each calendar's own address by hand: RFC 6764's well-known
+  // redirect for a bare server address, PROPFIND for the signed-in
+  // principal, PROPFIND that for the calendar-home-set, then PROPFIND the
+  // home-set at Depth:1 for its children. A server that does not answer one
+  // of the first two PROPFIND steps still gets a chance at the last one
+  // against whatever address was given — many servers accept a home-set or
+  // even a calendar collection URL directly, and every address this walks
+  // through, redirected or discovered, is held to the account's own origin
+  // by resolveDiscoveredUrl before it is used for anything.
   function discoverCalendars(accountUrl, username, password) {
     if (discovering || savingSource) return
     var url = String(accountUrl || "").trim()
@@ -421,7 +422,9 @@ Item {
     discoveryCredentials = user + ":" + pass
     pass = ""
     discovering = true
-    runDiscoveryStep("principal", url, Calendar.discoverPrincipalPropfind(), "0")
+    var origin = Calendar.urlOrigin(url)
+    var wellKnownUrl = origin !== "" ? origin + "/.well-known/caldav" : url
+    runDiscoveryStep("wellknown", wellKnownUrl, Calendar.discoverPrincipalPropfind(), "0")
   }
 
   function runDiscoveryStep(stage, url, body, depth) {
@@ -835,8 +838,16 @@ Item {
       var status = Number(lines[0])
       var body = lines.length > 1
         ? Mail.decodeBase64Url(lines[1].replace(/\+/g, "-").replace(/\//g, "_")) : ""
+      var headers = lines.length > 3
+        ? Mail.decodeBase64Url(lines[3].replace(/\+/g, "-").replace(/\//g, "_")) : ""
       var ok = exitCode === 0 && status === 0
       var requestUrl = root.discoveryStageUrl
+      if (root.discoveryStage === "wellknown") {
+        var afterWellKnown = Calendar.discoveredWellKnownUrl(headers, root.discoveryAccountUrl)
+          || root.discoveryAccountUrl
+        root.runDiscoveryStep("principal", afterWellKnown, Calendar.discoverPrincipalPropfind(), "0")
+        return
+      }
       if (root.discoveryStage === "principal") {
         var principalUrl = (ok ? Calendar.discoveredPrincipalUrl(body, requestUrl) : "") || requestUrl
         root.runDiscoveryStep("homeset", principalUrl, Calendar.discoverHomeSetPropfind(), "0")

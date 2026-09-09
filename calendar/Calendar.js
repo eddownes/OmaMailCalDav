@@ -720,6 +720,45 @@ function discoveredContainerUrl(xml, accountUrl, containerLocalName) {
   return ""
 }
 
+// The last status line in a response's dumped headers — last, because a
+// redirect curl did not follow and a `100 Continue` curl received before it
+// both leave an earlier status line in the same dump, and the final answer
+// is the one this decides on.
+function lastHttpStatus(headersText) {
+  var lines = String(headersText || "").split(/\r?\n/)
+  var status = 0
+  for (var i = 0; i < lines.length; i++) {
+    var match = /^HTTP\/\S+\s+(\d\d\d)/.exec(lines[i])
+    if (match) status = Number(match[1])
+  }
+  return status
+}
+
+function lastLocationHeader(headersText) {
+  var lines = String(headersText || "").split(/\r?\n/)
+  var location = ""
+  for (var i = 0; i < lines.length; i++) {
+    var match = /^location:\s*(\S+)/i.exec(lines[i])
+    if (match) location = match[1]
+  }
+  return location
+}
+
+// RFC 6764: a CalDAV client that only knows a bare server address is
+// supposed to try /.well-known/caldav there first and follow the redirect —
+// Fastmail, among others, answers a request for the address alone with a
+// plain 404 and only the well-known path names where the real service lives.
+// Resolved on the same rule as any other discovered address: a redirect to
+// a different origin is not one hop closer to this account's calendars, it
+// is somewhere this account's credentials must not follow.
+function discoveredWellKnownUrl(headersText, accountUrl) {
+  var status = lastHttpStatus(headersText)
+  if (status < 300 || status >= 400) return ""
+  var location = lastLocationHeader(headersText)
+  if (location === "") return ""
+  return resolveDiscoveredUrl(accountUrl, location)
+}
+
 function discoveredPrincipalUrl(xml, accountUrl) {
   return discoveredContainerUrl(xml, accountUrl, "current-user-principal")
 }

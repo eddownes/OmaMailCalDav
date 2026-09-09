@@ -4,6 +4,12 @@
 # one method. Fields cross base64-encoded on one line of stdin, so a password
 # never reaches the process table, and the config goes to curl's own stdin
 # rather than to a file on disk.
+#
+# curl is never told to follow a redirect (no --location): the response
+# headers go back to the caller instead, so calendar/Calendar.js can decide
+# whether a 3xx's Location is worth one more hop on the same rule it holds
+# every other discovered address to — the account's own origin, nothing
+# named by a server left to speak for itself.
 set -eu
 
 fail() { printf '%s\n' "$1" >&2; exit 2; }
@@ -55,4 +61,6 @@ printf '%s\n' "$status"
 encode "$work/out"
 printf '\n'
 encode "$work/err"
+printf '\n'
+encode "$work/headers"
 printf '\n'
