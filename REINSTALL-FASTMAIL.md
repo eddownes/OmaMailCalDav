@@ -22,7 +22,7 @@ built from this checkout instead.
 
 Branches:
 
-- `fastmail-caldav`: the fix plus this guide. Install from this one.
+- `fastmail-caldav` (**default**): the fix plus this guide. This is what `omarchy plugin add` installs.
 - `caldav-server-discovery`: exactly what PR #292 contains. Don't add personal changes
   there, because anything pushed to it shows up in the PR.
 
@@ -41,9 +41,10 @@ Your normal Fastmail password won't work for CalDAV.
 
 ```bash
 omarchy plugin add https://github.com/eddownes/OmaMailCalDav.git --enable --yes
-git -C ~/.config/omarchy/plugins/omamail fetch origin fastmail-caldav
-git -C ~/.config/omarchy/plugins/omamail checkout --detach FETCH_HEAD
 ```
+
+`omarchy plugin add` clones the default branch (`fastmail-caldav`) into
+`~/.config/omarchy/plugins/omamail`.
 
 Open Omamail once and let it finish its own setup (it downloads upstream's backend to
 `~/.local/share/omamail/bin/omamail`). Step 2 replaces that binary.
