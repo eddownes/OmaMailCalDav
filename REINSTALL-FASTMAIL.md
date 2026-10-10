@@ -7,17 +7,18 @@ discovery proposed upstream in
 Use it on a fresh Omarchy install until that PR is merged and released.
 
 **The plugin checkout alone is not enough.** The fix has two halves, and the installer
-only gives you one of them. Skipping step 2 below is why discovery "does nothing" on a
+only gives you one of them. Skipping step 2 below is why there is no discovery button on a
 new machine.
 
 ## Why a fresh install doesn't discover Fastmail calendars
 
 | Half | Where it lives | What a normal install gives you |
 | --- | --- | --- |
-| The **Discover calendars...** wizard | QML in `ui/` | This fork's version, straight from the checkout. |
+| The **Discover CalDAV calendars...** wizard | QML in `ui/` | This fork's version, straight from the checkout. |
 | The `calendar.discoverCaldavServer` RPC the wizard calls | Rust in `src/calendar/discovery.rs` | **Upstream's prebuilt backend**, downloaded from upstream's release for the version in `backend-version`. It does not have the RPC. |
 
-So the wizard is there but the backend behind it can't answer. The backend has to be
+So the wizard's code is installed, but it stays hidden because the backend behind it
+can't answer. The backend has to be
 built from this checkout instead.
 
 Branches:
@@ -26,7 +27,7 @@ Branches:
 - `caldav-server-discovery`: exactly what PR #292 contains. Don't add personal changes
   there, because anything pushed to it shows up in the PR.
 
-The tag `fastmail-caldav-2026-09-25` marks the tested code (this branch adds only this guide on top of it).
+Both branches are rebased onto upstream v0.10.8 and carry the fixes from the PR review. The tag `fastmail-caldav-2026-09-25` marks the older v0.10.6-based code that was tested against a live Fastmail account.
 
 ## Before you start: create a Fastmail app password
 
@@ -65,8 +66,8 @@ The build goes to `target/`, which is git-ignored, so the checkout stays clean.
 
 ## 3. Add your Fastmail calendars
 
-1. Open Omamail, then **Settings → Calendars → Discover calendars...** (next to
-   **Add a calendar**).
+1. Open Omamail, then **Settings → Calendars → Discover CalDAV calendars...** (above
+   **Connect a CalDAV calendar...**).
 2. **Server address:** `https://caldav.fastmail.com`.
    **Username:** your full Fastmail address.
    **Password:** the app password from above.
@@ -86,9 +87,9 @@ curl -sS -o /dev/null -w '%{http_code} -> %{redirect_url}\n' -X PROPFIND https:/
 
 | Symptom | Cause / fix |
 | --- | --- |
-| **Discover calendars...** is there but finds nothing or errors immediately | The backend is upstream's prebuilt binary. Run the first check in step 4; if it prints `0`, redo step 2. |
+| No **Discover CalDAV calendars...** button, on this fork's branch | The backend is upstream's prebuilt binary, so the button is hidden. Run the first check in step 4; if it prints `0`, redo step 2. |
 | It worked, then stopped after an update | A plugin update or backend reinstall put upstream's binary back. Redo step 2. |
-| No **Discover calendars...** button at all | The checkout isn't this fork's branch. Check `git -C ~/.config/omarchy/plugins/omamail remote -v` and `log -1`. |
+| No button, and step 4 prints `1` | The checkout isn't this fork's branch. Check `git -C ~/.config/omarchy/plugins/omamail remote -v` and `log -1`. |
 | "Local backend does not match Cargo package version." | `backend-version` and `Cargo.toml` disagree, usually after a partial update. Check out this branch cleanly and rebuild. |
 | Credentials rejected | You used your account password or an app password without CalDAV access. Create a new one as described above. |
 | Wizard still fails right after step 2 | The old backend process or shell is still running: `pkill -x omamail`, and if needed `omarchy restart shell`. |
