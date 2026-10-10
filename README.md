@@ -11,8 +11,10 @@ Omamail is a native email and calendar app with multiple accounts and keyboard n
 The plugin requires **Omarchy 4** and follows the active Omarchy theme. It includes the bar widget, `mailto:` integration, and AI assistance through the configured Omarchy agent.
 
 ```bash
-omarchy plugin add https://github.com/huacnlee/omamail.git --enable
+omarchy plugin add https://github.com/eddownes/OmaMailCalDav.git --enable
 ```
+
+This is a fork of [huacnlee/omamail](https://github.com/huacnlee/omamail) that adds CalDAV server discovery for Fastmail, Nextcloud and other CalDAV servers. The prebuilt backend comes from upstream and does not include it, so build the backend from this checkout afterwards: see [REINSTALL-FASTMAIL.md](REINSTALL-FASTMAIL.md). For upstream without discovery, use `https://github.com/huacnlee/omamail.git` instead.
 
 Update it with:
 
